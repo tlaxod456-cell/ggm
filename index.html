@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>가계부</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -128,6 +129,7 @@
     }
 
     .submit-btn:hover { background: #1d4ed8; }
+    .submit-btn:disabled { background: #93c5fd; cursor: not-allowed; }
 
     .list-card {
       background: white;
@@ -208,6 +210,13 @@
       color: #bbb;
       font-size: 0.9rem;
     }
+
+    .loading-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #93c5fd;
+      font-size: 0.9rem;
+    }
   </style>
 </head>
 <body>
@@ -247,7 +256,7 @@
     <input type="text" id="input-desc" placeholder="내용">
     <input type="number" id="input-amount" placeholder="금액" min="0" style="width:140px; flex-shrink:0;">
   </div>
-  <button class="submit-btn" onclick="addTransaction()">추가</button>
+  <button class="submit-btn" id="submit-btn" onclick="addTransaction()">추가</button>
 </div>
 
 <div class="list-card">
@@ -257,27 +266,47 @@
       <option value="all">전체</option>
     </select>
   </div>
-  <ul class="transaction-list" id="tx-list"></ul>
+  <ul class="transaction-list" id="tx-list">
+    <div class="loading-state">불러오는 중...</div>
+  </ul>
 </div>
 
 <script>
+  const SUPABASE_URL = 'https://ojydecoyvqbrhqrevmso.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9qeWRlY295dnFicmhxcmV2bXNvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NzkyOTQsImV4cCI6MjA5NzA1NTI5NH0.OlMleRJvL7BylPT9b65gjz-iF3F0BihWnZIaNjv0vV4';
+  const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
   const CATEGORIES = {
     income: ['급여', '부업', '용돈', '투자', '기타 수입'],
     expense: ['식비', '교통', '쇼핑', '문화', '의료', '주거', '통신', '기타 지출']
   };
 
-  const ICONS = {
-    income: '💵',
-    expense: '💸'
-  };
+  const ICONS = { income: '💵', expense: '💸' };
 
   let currentType = 'income';
-  let transactions = JSON.parse(localStorage.getItem('ggm_tx') || '[]');
+  let transactions = [];
 
-  function init() {
+  async function init() {
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('input-date').value = today;
     updateCategories();
+    await loadTransactions();
+  }
+
+  async function loadTransactions() {
+    const { data, error } = await db
+      .from('transactions')
+      .select('*')
+      .order('date', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error(error);
+      alert('데이터를 불러오는 데 실패했습니다.');
+      return;
+    }
+
+    transactions = data;
     updateMonthFilter();
     render();
   }
@@ -299,42 +328,59 @@
     });
   }
 
-  function addTransaction() {
+  async function addTransaction() {
     const date = document.getElementById('input-date').value;
     const category = document.getElementById('input-category').value;
-    const desc = document.getElementById('input-desc').value.trim();
+    const description = document.getElementById('input-desc').value.trim();
     const amount = parseInt(document.getElementById('input-amount').value);
 
-    if (!date || !desc || !amount || amount <= 0) {
+    if (!date || !description || !amount || amount <= 0) {
       alert('날짜, 내용, 금액을 모두 입력해주세요.');
       return;
     }
 
-    transactions.unshift({
-      id: Date.now(),
-      type: currentType,
-      date,
-      category: category || (currentType === 'income' ? '기타 수입' : '기타 지출'),
-      desc,
-      amount
-    });
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.textContent = '저장 중...';
 
-    save();
+    const { data, error } = await db
+      .from('transactions')
+      .insert({
+        type: currentType,
+        date,
+        category: category || (currentType === 'income' ? '기타 수입' : '기타 지출'),
+        description,
+        amount
+      })
+      .select()
+      .single();
+
+    btn.disabled = false;
+    btn.textContent = '추가';
+
+    if (error) {
+      console.error(error);
+      alert('저장에 실패했습니다.');
+      return;
+    }
+
+    transactions.unshift(data);
     document.getElementById('input-desc').value = '';
     document.getElementById('input-amount').value = '';
     updateMonthFilter();
     render();
   }
 
-  function deleteTransaction(id) {
+  async function deleteTransaction(id) {
+    const { error } = await db.from('transactions').delete().eq('id', id);
+    if (error) {
+      console.error(error);
+      alert('삭제에 실패했습니다.');
+      return;
+    }
     transactions = transactions.filter(t => t.id !== id);
-    save();
     updateMonthFilter();
     render();
-  }
-
-  function save() {
-    localStorage.setItem('ggm_tx', JSON.stringify(transactions));
   }
 
   function updateMonthFilter() {
@@ -377,7 +423,7 @@
       <li class="transaction-item">
         <div class="tx-icon ${t.type}">${ICONS[t.type]}</div>
         <div class="tx-info">
-          <div class="tx-desc">${t.desc}</div>
+          <div class="tx-desc">${t.description}</div>
           <div class="tx-meta">${t.date} · ${t.category}</div>
         </div>
         <div class="tx-amount ${t.type}">${t.type === 'income' ? '+' : '-'}${fmt(t.amount)}</div>
