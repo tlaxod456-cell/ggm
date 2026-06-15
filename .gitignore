@@ -1,4 +1,5 @@
 .vercel
+.claude/
 goguma-market/.env.local
 goguma-market/.next/
 goguma-market/node_modules/
