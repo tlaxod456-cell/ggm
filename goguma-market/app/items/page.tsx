@@ -1,13 +1,12 @@
 import { createClient } from '@/lib/supabase/server'
 import Navbar from '@/components/Navbar'
 import Link from 'next/link'
+import Image from 'next/image'
 
-// 가격을 "500,000원" 형태로 바꿔주는 함수
 function formatPrice(price: number) {
   return price.toLocaleString('ko-KR') + '원'
 }
 
-// 작성 시간을 "3분 전", "2일 전" 형태로 바꿔주는 함수
 function timeAgo(dateStr: string) {
   const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
   if (diff < 60) return '방금 전'
@@ -16,18 +15,38 @@ function timeAgo(dateStr: string) {
   return `${Math.floor(diff / 86400)}일 전`
 }
 
+function categoryEmoji(category: string) {
+  const map: Record<string, string> = {
+    '디지털/가전': '📱', '가구/인테리어': '🪑', '의류/잡화': '👕',
+    '도서/문구': '📚', '스포츠/레저': '⚽', '생활/식품': '🛒',
+    '유아/아동': '🧸', '반려동물': '🐾', '게임/취미': '🎮', '기타': '📦',
+  }
+  return map[category] ?? '📦'
+}
+
 export default async function ItemsPage() {
   const supabase = await createClient()
 
-  // 로그인 사용자 정보 (네비게이션 바에 사용)
   const { data: { user } } = await supabase.auth.getUser()
 
-  // DB에서 판매글 목록 가져오기 (최신순)
-  const { data: items, error } = await supabase
-    .from('items')
-    .select('id, title, price, category, status, created_at')
-    .eq('status', 'sale')
-    .order('created_at', { ascending: false })
+  const [{ data: items, error }, { data: reactions }] = await Promise.all([
+    supabase
+      .from('items')
+      .select('id, title, price, category, status, created_at, images')
+      .eq('status', 'sale')
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('reactions')
+      .select('item_id, type'),
+  ])
+
+  // item_id 별로 좋아요/싫어요 수 집계
+  const reactionMap: Record<number, { likes: number; dislikes: number }> = {}
+  for (const r of reactions ?? []) {
+    if (!reactionMap[r.item_id]) reactionMap[r.item_id] = { likes: 0, dislikes: 0 }
+    if (r.type === 'like') reactionMap[r.item_id].likes++
+    else reactionMap[r.item_id].dislikes++
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -46,7 +65,6 @@ export default async function ItemsPage() {
           )}
         </div>
 
-        {/* 에러 또는 빈 상태 */}
         {(error || !items || items.length === 0) ? (
           <div className="text-center py-24 text-gray-400">
             <div className="text-5xl mb-4">🍠</div>
@@ -63,47 +81,48 @@ export default async function ItemsPage() {
           </div>
         ) : (
           <ul className="divide-y divide-gray-100 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            {items.map((item) => (
-              <li key={item.id}>
-                <Link
-                  href={`/items/${item.id}`}
-                  className="flex items-center gap-4 px-5 py-4 hover:bg-orange-50 transition-colors"
-                >
-                  {/* 카테고리 아이콘 자리 (이미지 없는 버전) */}
-                  <div className="w-16 h-16 bg-orange-100 rounded-xl flex items-center justify-center text-2xl flex-shrink-0">
-                    {categoryEmoji(item.category)}
-                  </div>
+            {items.map((item) => {
+              const thumbnail = item.images?.[0]
+              const { likes = 0, dislikes = 0 } = reactionMap[item.id] ?? {}
+              return (
+                <li key={item.id}>
+                  <Link
+                    href={`/items/${item.id}`}
+                    className="flex items-center gap-4 px-5 py-4 hover:bg-orange-50 transition-colors"
+                  >
+                    {/* 썸네일 */}
+                    <div className="w-16 h-16 rounded-xl overflow-hidden flex-shrink-0 bg-orange-100 flex items-center justify-center text-2xl">
+                      {thumbnail ? (
+                        <Image
+                          src={thumbnail}
+                          alt={item.title}
+                          width={64}
+                          height={64}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        categoryEmoji(item.category)
+                      )}
+                    </div>
 
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-900 truncate">{item.title}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{item.category} · {timeAgo(item.created_at)}</p>
-                    <p className="text-sm font-bold text-gray-900 mt-1">{formatPrice(item.price)}</p>
-                  </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-900 truncate">{item.title}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{item.category} · {timeAgo(item.created_at)}</p>
+                      <p className="text-sm font-bold text-gray-900 mt-1">{formatPrice(item.price)}</p>
+                    </div>
 
-                  <span className="text-gray-300 flex-shrink-0">›</span>
-                </Link>
-              </li>
-            ))}
+                    {/* 좋아요 / 싫어요 수 */}
+                    <div className="flex flex-col items-end gap-1 flex-shrink-0 text-xs text-gray-400">
+                      <span>👍 {likes}</span>
+                      <span>👎 {dislikes}</span>
+                    </div>
+                  </Link>
+                </li>
+              )
+            })}
           </ul>
         )}
       </main>
     </div>
   )
-}
-
-// 카테고리별 이모지
-function categoryEmoji(category: string) {
-  const map: Record<string, string> = {
-    '디지털/가전': '📱',
-    '가구/인테리어': '🪑',
-    '의류/잡화': '👕',
-    '도서/문구': '📚',
-    '스포츠/레저': '⚽',
-    '생활/식품': '🛒',
-    '유아/아동': '🧸',
-    '반려동물': '🐾',
-    '게임/취미': '🎮',
-    '기타': '📦',
-  }
-  return map[category] ?? '📦'
 }

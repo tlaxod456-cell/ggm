@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
+import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 
 const CATEGORIES = [
@@ -10,21 +11,34 @@ const CATEGORIES = [
   '스포츠/레저', '생활/식품', '유아/아동', '반려동물', '게임/취미', '기타',
 ]
 
+const MAX_IMAGES = 5
+
 export default function EditItemPage() {
   const router = useRouter()
   const params = useParams()
   const itemId = params.id as string
   const supabase = createClient()
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [title, setTitle] = useState('')
   const [price, setPrice] = useState('')
   const [category, setCategory] = useState('')
   const [description, setDescription] = useState('')
+
+  // 기존 이미지 URL 목록 (서버에 이미 저장된 것)
+  const [existingImages, setExistingImages] = useState<string[]>([])
+  // 기존 이미지 중 삭제 예정인 URL 목록
+  const [removedImages, setRemovedImages] = useState<string[]>([])
+  // 새로 추가할 파일
+  const [newFiles, setNewFiles] = useState<File[]>([])
+  const [newPreviews, setNewPreviews] = useState<string[]>([])
+
   const [loading, setLoading] = useState(false)
   const [fetching, setFetching] = useState(true)
   const [error, setError] = useState('')
 
-  // 페이지 열릴 때 기존 글 내용 불러오기
+  const totalImages = existingImages.filter(u => !removedImages.includes(u)).length + newFiles.length
+
   useEffect(() => {
     async function loadItem() {
       const { data: { user } } = await supabase.auth.getUser()
@@ -37,14 +51,13 @@ export default function EditItemPage() {
         .single()
 
       if (!item) { router.push('/items'); return }
-
-      // 본인 글이 아니면 차단
       if (item.user_id !== user.id) { router.push(`/items/${itemId}`); return }
 
       setTitle(item.title)
       setPrice(item.price.toLocaleString())
       setCategory(item.category)
       setDescription(item.description)
+      setExistingImages(item.images ?? [])
       setFetching(false)
     }
     loadItem()
@@ -54,6 +67,28 @@ export default function EditItemPage() {
     const raw = e.target.value.replace(/[^0-9]/g, '')
     if (raw === '') { setPrice(''); return }
     setPrice(Number(raw).toLocaleString())
+  }
+
+  function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+    if (!files.length) return
+
+    const remaining = MAX_IMAGES - totalImages
+    const selected = files.slice(0, remaining)
+
+    setNewFiles(prev => [...prev, ...selected])
+    setNewPreviews(prev => [...prev, ...selected.map(f => URL.createObjectURL(f))])
+    e.target.value = ''
+  }
+
+  function removeExistingImage(url: string) {
+    setRemovedImages(prev => [...prev, url])
+  }
+
+  function removeNewImage(index: number) {
+    URL.revokeObjectURL(newPreviews[index])
+    setNewFiles(prev => prev.filter((_, i) => i !== index))
+    setNewPreviews(prev => prev.filter((_, i) => i !== index))
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -68,9 +103,48 @@ export default function EditItemPage() {
 
     setLoading(true)
 
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { router.push('/login'); return }
+
+    // 삭제 예정 이미지를 Storage에서 제거
+    for (const url of removedImages) {
+      // URL에서 파일 경로 추출: .../item-images/{path} → {path}
+      const path = url.split('/item-images/')[1]
+      if (path) {
+        await supabase.storage.from('item-images').remove([decodeURIComponent(path)])
+      }
+    }
+
+    // 새 이미지 업로드
+    const uploadedUrls: string[] = []
+    for (const file of newFiles) {
+      const ext = file.name.split('.').pop()
+      const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+      const { error: uploadError } = await supabase.storage
+        .from('item-images')
+        .upload(path, file)
+
+      if (uploadError) {
+        setError('이미지 업로드에 실패했습니다. 다시 시도해주세요.')
+        setLoading(false)
+        return
+      }
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('item-images')
+        .getPublicUrl(path)
+      uploadedUrls.push(publicUrl)
+    }
+
+    // 최종 이미지 목록: 남긴 기존 이미지 + 새로 업로드한 이미지
+    const finalImages = [
+      ...existingImages.filter(u => !removedImages.includes(u)),
+      ...uploadedUrls,
+    ]
+
     const { error: updateError } = await supabase
       .from('items')
-      .update({ title, price: parsedPrice, category, description })
+      .update({ title, price: parsedPrice, category, description, images: finalImages })
       .eq('id', itemId)
 
     setLoading(false)
@@ -91,6 +165,8 @@ export default function EditItemPage() {
       </div>
     )
   }
+
+  const keptExisting = existingImages.filter(u => !removedImages.includes(u))
 
   return (
     <div className="min-h-screen bg-[#FAFAFA]">
@@ -114,6 +190,78 @@ export default function EditItemPage() {
       <main className="max-w-screen-md mx-auto px-4 py-6">
         <form id="edit-form" onSubmit={handleSubmit} className="space-y-5">
 
+          {/* 이미지 관리 */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-2">
+              사진 <span className="text-gray-300">({totalImages}/{MAX_IMAGES})</span>
+            </label>
+            <div className="flex gap-2 flex-wrap">
+              {/* 기존 이미지 */}
+              {keptExisting.map((url, i) => (
+                <div key={url} className="relative w-20 h-20">
+                  <Image
+                    src={url}
+                    alt={`사진 ${i + 1}`}
+                    fill
+                    className="object-cover rounded-xl border border-gray-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeExistingImage(url)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-700 text-white rounded-full text-xs flex items-center justify-center hover:bg-gray-900 transition-colors"
+                  >
+                    ×
+                  </button>
+                  {i === 0 && (
+                    <span className="absolute bottom-0 left-0 right-0 text-center text-[10px] bg-black/40 text-white rounded-b-xl py-0.5">
+                      대표
+                    </span>
+                  )}
+                </div>
+              ))}
+
+              {/* 새로 추가한 이미지 미리보기 */}
+              {newPreviews.map((src, i) => (
+                <div key={i} className="relative w-20 h-20">
+                  <Image
+                    src={src}
+                    alt={`새 사진 ${i + 1}`}
+                    fill
+                    className="object-cover rounded-xl border border-orange-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeNewImage(i)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-700 text-white rounded-full text-xs flex items-center justify-center hover:bg-gray-900 transition-colors"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+
+              {/* 사진 추가 버튼 */}
+              {totalImages < MAX_IMAGES && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-20 h-20 border-2 border-dashed border-gray-200 rounded-xl flex flex-col items-center justify-center text-gray-400 hover:border-orange-300 hover:text-orange-400 transition-colors"
+                >
+                  <span className="text-2xl leading-none">+</span>
+                  <span className="text-[10px] mt-1">사진 추가</span>
+                </button>
+              )}
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handleImageSelect}
+              className="hidden"
+            />
+          </div>
+
+          {/* 제목 */}
           <div>
             <label className="block text-xs font-semibold text-gray-500 mb-2">
               제목 <span className="text-orange-400">*</span>
